@@ -26,25 +26,45 @@ export async function loadData() {
  * 
  * Returns:
  *  X - an array of arrays [[],[], ...]
- *  y - an array of labels [0,1] or [1, 0]
+ *  y - an array of labels
  */
 export async function prepareData(data, features) {
   console.log("2. Preparing data ...");
- 
+  const X = data.map((row) => {
+    return features.map((feature) => {
+      const value = row[feature];
+      return value !== undefined ? value : 0;
+    });
+  });
+
+  const y = data.map((row) => {
+    const fake = row.fake !== undefined ? row.fake : 0;
+    return oneHot(fake);
+  });
+
+  return [X, y];
 }
 
 /**
  * 3. Validation split
  * 
- * Returns:
- *  trainDs   - dataset used for training
- *  testDs    - dataset used for validation
  */
 export function splitData(X, y, validationSplit, batchSize) {
   console.log("3. Splitting data ...");
+  //  convert to tensor
+  const dataset = tf.data
+    .zip({ xs: tf.data.array(X), ys: tf.data.array(y) })
+    .shuffle(X.length, 42);
 
-} 
+  //  split into validation set 
+  const splitIdx = X.length * validationSplit;
+  console.log('X', X, 'Y', y);
 
+  const trainDataset = dataset.take(splitIdx).batch(batchSize);
+  const validDataset = dataset.skip(splitIdx + 1).batch(batchSize);
+
+  return [trainDataset, validDataset];
+}
 
 /**
  * 4. Define tensorflow sequential model with:
@@ -57,7 +77,17 @@ export function splitData(X, y, validationSplit, batchSize) {
  */
 export function getTfModel(features) {
   console.log("4. Getting tf model ...");
- 
+  const model = tf.sequential();
+  
+  model.add(
+    tf.layers.dense({
+      units: 2,
+      activation: "softmax",
+      inputShape: [features.length]
+    })
+  );
+
+  return model;
 }
 
 /**
@@ -66,7 +96,14 @@ export function getTfModel(features) {
  */
 export function compileTfModel(model) {
   console.log("5. Compiling tf model ...");
-
+  const optimizer = tf.train.adam(0.005);
+console.log('here')
+console.log(model)
+  model.compile({
+    optimizer: optimizer,
+    loss: "binaryCrossentropy",
+    metrics: ["accuracy"]
+  });
 }
 
 /**
@@ -76,7 +113,21 @@ export function compileTfModel(model) {
  */
 export async function trainTfModel(model, trainDs, validationDs) {
   console.log("6. Training tf model ...");
+  
+  const trainLogs = [];
+  await model.fitDataset(trainDs, {
+    epochs: 100,
+    validationData: validationDs,
+    callbacks: {
+      onEpochEnd: async (epoch, logs) => {
+        trainLogs.push(logs);
+        tfvis.show.history(lossContainerEl, trainLogs, ["loss", "val_loss"]);
+        tfvis.show.history(accContainerEl, trainLogs, ["acc", "val_acc"]);
+      }
+    }
+  });
 
+  return model;
 }
 
 /**
@@ -86,7 +137,18 @@ export async function trainTfModel(model, trainDs, validationDs) {
  *  - visualise results with tfvis confusionMatrix
  */
 export async function testResults(model, X, y, split) {
- 
+  const splitIdx = X.length * split;
+  const xTest = tf.tensor(X.slice(splitIdx));
+  const yTest = tf.tensor(y.slice(splitIdx));
+
+  const preds = model.predict(xTest).argMax(-1);
+  const labels = yTest.argMax(-1);
+  const confusionMatrix = await tfvis.metrics.confusionMatrix(labels, preds);
+
+  tfvis.render.confusionMatrix(matrixContainerEl, {
+    values: confusionMatrix,
+    tickLabels: ["Fake", "Not-Fake"]
+  });
 }
 
 
@@ -96,11 +158,12 @@ export async function testResults(model, X, y, split) {
   console.log('Loaded data:', data);
 
   //  2. PREPARE DATA
-  const features = [];
+  const features = ["profile pic", "nums/length username", "fullname words", "nums/length fullname",
+    "name==username", "description length", "external URL", "private", "#posts", "#followers", "#follows"];
   const [X, y] = await prepareData(data, features);
 
   //  3. SPLIT DATA
-  const [trainDs, validationDs] = splitData(X, y, .8, 128);
+  const [trainDs, validationDs] = splitData(X, y, .8, 16);
 
   //  4. GET TF MODEL
   const model = getTfModel(features);
